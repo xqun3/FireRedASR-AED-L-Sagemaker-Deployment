@@ -1,0 +1,34 @@
+# 使用最新的 Triton 镜像作为基础镜像
+FROM nvcr.io/nvidia/tritonserver:25.06-py3
+
+# 设置环境变量
+ENV PYTHONUNBUFFERED=TRUE
+ENV PYTHONDONTWRITEBYTECODE=TRUE
+ENV PATH="/opt/program:${PATH}"
+
+# 安装必要的依赖
+RUN apt-get update && apt-get install -y \
+    nginx \
+    ca-certificates \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# 创建程序目录 
+RUN mkdir -p /opt/program
+
+# 复制 SageMaker 服务代码
+COPY sagemaker_deploy/requirements.txt sagemaker_deploy/serve /opt/program/
+RUN chmod +x /opt/program/serve && pip install --no-cache-dir -r /opt/program/requirements.txt
+
+# 复制模型仓库
+# COPY model_repository/ /opt/ml/model/
+
+# 设置工作目录
+WORKDIR /opt/program
+
+# SageMaker 使用的默认端口
+EXPOSE 8080
+
+# 启动脚本
+ENTRYPOINT ["/opt/program/serve"]

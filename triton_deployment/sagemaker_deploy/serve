@@ -1,0 +1,41 @@
+#!/bin/bash
+
+set -e  # Exit immediately if a command exits with a non-zero status.
+
+# Set the directory to check
+base_dir="/opt/program"
+export SAGEMAKER_BIND_TO_PORT=${SAGEMAKER_BIND_TO_PORT:-8080}
+
+# Check if the directory exists
+if [ ! -d "$base_dir" ]; then
+    echo "Error: $base_dir directory does not exist"
+    exit 1
+fi
+
+ls -R /opt/ml/model/
+
+if [ -f "/opt/ml/model/sagemaker_deploy/start_triton_and_client.sh" ]; then
+    ls -R /opt/ml/model/
+    cp -r /opt/ml/model/sagemaker_deploy/* /opt/program/ || { log "Failed to copy model data"; exit 1; }
+
+    echo "Contents of /opt/program/:"
+    ls -R /opt/program/
+    python3 $base_dir/ssh_helper_start.py || { echo "SSH helper start failed";}
+    
+    # Start Triton server and run client
+    # chmod +x $base_dir/start_triton_and_client.sh
+    bash -x $base_dir/start_triton_and_client.sh
+else
+    echo "Error: start_triton_and_client.sh not found in /opt/ml/model/sagemaker_deploy"
+    exit 1
+fi
+
+
+# Cleanup function
+cleanup() {
+    if [ ! -z "$triton_pid" ]; then
+        kill $triton_pid
+    fi
+}
+
+trap cleanup EXIT

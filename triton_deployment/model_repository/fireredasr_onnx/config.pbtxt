@@ -1,0 +1,33 @@
+name: "fireredasr_onnx"
+backend: "python"
+max_batch_size: 4
+
+input [
+  {
+    name: "audio_data"
+    data_type: TYPE_INT16
+    dims: [-1]
+  }
+]
+
+output [
+  {
+    name: "transcription"
+    data_type: TYPE_STRING
+    dims: [1]
+  }
+]
+
+dynamic_batching {
+  max_queue_delay_microseconds: 10
+}
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+    gpus: [0]
+  }
+]
+
+

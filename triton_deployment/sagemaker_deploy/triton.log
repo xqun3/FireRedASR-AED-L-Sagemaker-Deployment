@@ -1,0 +1,76 @@
+I0724 07:21:14.403993 4566 pinned_memory_manager.cc:277] "Pinned memory pool is created at '0x7f4256000000' with size 268435456"
+I0724 07:21:14.406820 4566 cuda_memory_manager.cc:107] "CUDA memory pool is created on device 0 with size 67108864"
+W0724 07:21:14.415881 4566 model_lifecycle.cc:112] "ignore version directory '.ipynb_checkpoints' which fails to convert to integral number"
+I0724 07:21:14.415910 4566 model_lifecycle.cc:473] "loading: fireredasr_onnx:1"
+I0724 07:21:14.420254 4566 python_be.cc:2289] "TRITONBACKEND_ModelInstanceInitialize: fireredasr_onnx_0_1 (GPU device 0)"
+I0724 07:21:14.420267 4566 python_be.cc:2289] "TRITONBACKEND_ModelInstanceInitialize: fireredasr_onnx_0_0 (GPU device 0)"
+[2025-07-24 07:21:16] [INFO] [TRITON] Initializing FireRedASR pipeline model...
+/opt/program/model_repository/fireredasr_onnx/1/FireRedASR/fireredasr/tokenizer/aed_tokenizer.py:39: SyntaxWarning: invalid escape sequence '\.'
+  text = re.sub("[，。？！,\.?!]", " ", text)
+[2025-07-24 07:21:16] [INFO] [TRITON] Initializing FireRedASR pipeline model...
+/opt/program/model_repository/fireredasr_onnx/1/FireRedASR/fireredasr/tokenizer/aed_tokenizer.py:39: SyntaxWarning: invalid escape sequence '\.'
+  text = re.sub("[，。？！,\.?!]", " ", text)
+[2025-07-24 07:21:16] [INFO] [TRITON] Successfully loaded FireRedASR feature extractor and tokenizer
+[2025-07-24 07:21:16] [INFO] [TRITON] Successfully loaded FireRedASR feature extractor and tokenizer
+[2025-07-24 07:21:17] [INFO] [TRITON] Loaded encoder model with providers: ['CUDAExecutionProvider', 'CPUExecutionProvider']
+[2025-07-24 07:21:17] [INFO] [TRITON] Loaded encoder model with providers: ['CUDAExecutionProvider', 'CPUExecutionProvider']
+[0;93m2025-07-24 07:21:18.564481138 [W:onnxruntime:, transformer_memcpy.cc:83 ApplyImpl] 5 Memcpy nodes are added to the graph main_graph for CUDAExecutionProvider. It might have negative impact on performance (including unable to run CUDA graph). Set session_options.log_severity_level=1 to see the detail logs before this message.[m
+[0;93m2025-07-24 07:21:18.641857040 [W:onnxruntime:, transformer_memcpy.cc:83 ApplyImpl] 5 Memcpy nodes are added to the graph main_graph for CUDAExecutionProvider. It might have negative impact on performance (including unable to run CUDA graph). Set session_options.log_severity_level=1 to see the detail logs before this message.[m
+[2025-07-24 07:21:19] [INFO] [TRITON] Loaded decoder model with providers: ['CUDAExecutionProvider', 'CPUExecutionProvider']
+[2025-07-24 07:21:19] [INFO] [TRITON] FireRedASR pipeline model initialized successfully
+[2025-07-24 07:21:19] [INFO] [TRITON] Loaded decoder model with providers: ['CUDAExecutionProvider', 'CPUExecutionProvider']
+[2025-07-24 07:21:19] [INFO] [TRITON] FireRedASR pipeline model initialized successfully
+I0724 07:21:19.236153 4566 model_lifecycle.cc:849] "successfully loaded 'fireredasr_onnx'"
+I0724 07:21:19.236228 4566 server.cc:611] 
++------------------+------+
+| Repository Agent | Path |
++------------------+------+
++------------------+------+
+
+I0724 07:21:19.236260 4566 server.cc:638] 
++---------+-------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Backend | Path                                                  | Config                                                                                                                                                         |
++---------+-------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| python  | /opt/tritonserver/backends/python/libtriton_python.so | {"cmdline":{"auto-complete-config":"false","backend-directory":"/opt/tritonserver/backends","min-compute-capability":"6.000000","default-max-batch-size":"4"}} |
++---------+-------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+I0724 07:21:19.236304 4566 server.cc:681] 
++-----------------+---------+--------+
+| Model           | Version | Status |
++-----------------+---------+--------+
+| fireredasr_onnx | 1       | READY  |
++-----------------+---------+--------+
+
+I0724 07:21:19.291462 4566 metrics.cc:890] "Collecting metrics for GPU 0: NVIDIA A10G"
+I0724 07:21:19.295762 4566 metrics.cc:783] "Collecting CPU metrics"
+I0724 07:21:19.295942 4566 tritonserver.cc:2598] 
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Option                           | Value                                                                                                                                                                                                           |
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| server_id                        | triton                                                                                                                                                                                                          |
+| server_version                   | 2.59.0                                                                                                                                                                                                          |
+| server_extensions                | classification sequence model_repository model_repository(unload_dependents) schedule_policy model_configuration system_shared_memory cuda_shared_memory binary_tensor_data parameters statistics trace logging |
+| model_repository_path[0]         | /opt/program/model_repository                                                                                                                                                                                   |
+| model_control_mode               | MODE_NONE                                                                                                                                                                                                       |
+| strict_model_config              | 1                                                                                                                                                                                                               |
+| model_config_name                |                                                                                                                                                                                                                 |
+| rate_limit                       | OFF                                                                                                                                                                                                             |
+| pinned_memory_pool_byte_size     | 268435456                                                                                                                                                                                                       |
+| cuda_memory_pool_byte_size{0}    | 67108864                                                                                                                                                                                                        |
+| min_supported_compute_capability | 6.0                                                                                                                                                                                                             |
+| strict_readiness                 | 1                                                                                                                                                                                                               |
+| exit_timeout                     | 30                                                                                                                                                                                                              |
+| cache_enabled                    | 0                                                                                                                                                                                                               |
++----------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+I0724 07:21:19.297471 4566 grpc_server.cc:2562] "Started GRPCInferenceService at 0.0.0.0:8001"
+I0724 07:21:19.297675 4566 http_server.cc:4832] "Started HTTPService at 0.0.0.0:8000"
+I0724 07:21:19.338768 4566 http_server.cc:358] "Started Metrics Service at 0.0.0.0:8002"
+[2025-07-24 07:21:48] [INFO] [TRITON] Final transcription: 每一天都要快乐喔
+[2025-07-24 07:21:51] [INFO] [TRITON] Final transcription: 每一天都要快乐喔
+[2025-07-24 07:21:52] [INFO] [TRITON] Final transcription: 每一天都要快乐喔
+[2025-07-24 07:21:56] [INFO] [TRITON] Final transcription: 每一天都要快乐喔
+[2025-07-24 07:21:57] [INFO] [TRITON] Final transcription: 每一天都要快乐喔
+[2025-07-24 07:21:59] [INFO] [TRITON] Final transcription: 每一天都要快乐喔
+[2025-07-24 07:22:00] [INFO] [TRITON] Final transcription: 每一天都要快乐喔
+[2025-07-24 07:22:01] [INFO] [TRITON] Final transcription: 每一天都要快乐喔
