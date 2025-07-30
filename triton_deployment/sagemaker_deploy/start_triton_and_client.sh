@@ -2,23 +2,6 @@
 
 set -e  # Exit immediately if a command exits with a non-zero status.
 
-# Cleanup function
-cleanup() {
-    if [ ! -z "$triton_pid" ]; then
-        echo "Cleaning up: killing Triton server (PID: $triton_pid)"
-        kill $triton_pid 2>/dev/null || true
-    fi
-}
-
-trap cleanup EXIT
-
-# Read S3 path from config file
-source deploy_config.sh
-if [ -z "$S3_PATH" ]; then
-    echo "Error: S3_PATH not set in config.sh"
-    exit 1
-fi
-
 # download model from s3
 python3 download_model_from_s3.py --source_s3_url ${model_s3_url} --local_dir_path "model_repository/" --working_dir "/opt/program" || { echo "S3 sync failed"; exit 1; }
 # aws s3 sync ${model_s3_url} /opt/program/model_repository/

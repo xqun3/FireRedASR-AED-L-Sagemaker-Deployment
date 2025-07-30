@@ -117,9 +117,8 @@ class TritonPythonModel:
     def process_audio_data(self, batch_audio):
         """处理音频字节数据并提取特征"""
         try:
-            audios, input_lengths, durs = self.feature_extractor(batch_audio)
-                    
             batch_size = len(batch_audio)
+            audios, input_lengths, durs = self.feature_extractor(batch_audio)
             pad_zeros = torch.zeros(batch_size, 6, 80, dtype=torch.float32, device=audios.device)
             padded_input = torch.cat((audios, pad_zeros), dim=1)
             N, T = padded_input.size()[:2]
@@ -190,6 +189,135 @@ class TritonPythonModel:
             logger.debug(traceback.format_exc())
             raise e
 
+    def run_batch_decoder(self, encoder_outputs, batch_size):
+        """批量解码器"""
+        try:
+            # 初始化批量输入
+            input_ids = np.array([[3] for _ in range(batch_size)], dtype=np.int32)  # [B, 1]
+            history_len = np.zeros(batch_size, dtype=np.int64)  # [B]
+            ids_len = np.ones(batch_size, dtype=np.int64)  # [B]
+            attention_mask = np.ones(batch_size, dtype=np.int8)  # [B]
+
+            # 初始化分层KV缓存 - 关键修复点1
+            num_layers = 16
+            past_keys = {}
+            past_values = {}
+            for j in range(num_layers):
+                past_keys[j] = np.zeros((batch_size, 20, 64, 0), dtype=np.float32)
+                past_values[j] = np.zeros((batch_size, 20, 0, 64), dtype=np.float32)
+
+            batch_tokens = [[] for _ in range(batch_size)]
+            finished = [False] * batch_size
+
+            logger.debug(f"Starting batch decoding for {batch_size} samples")
+
+            # 批量解码循环
+            for step in range(self.max_seq_len):
+                if all(finished):
+                    logger.debug(f"All samples finished at step {step}")
+                    break
+
+                logger.debug(f"Decoding step {step}, input_ids shape: {input_ids.shape}")
+
+                # 准备批量输入
+                decoder_inputs = {
+                    "input_ids": input_ids,
+                    "history_len": history_len,
+                    "ids_len": ids_len,
+                    "attention_mask": attention_mask
+                }
+
+                # 添加分层KV缓存 - 关键修复点2
+                for j in range(num_layers):
+                    decoder_inputs[f"in_de_key_{j}"] = past_keys[j]
+                    decoder_inputs[f"in_de_value_{j}"] = past_values[j]
+
+                # 添加encoder输出
+                for key, value in encoder_outputs.items():
+                    decoder_inputs[key] = value
+
+                # 批量推理
+                decoder_outputs = self.run_decoder_step(decoder_inputs)
+
+                # 处理批量输出
+                max_logit_ids = decoder_outputs["max_logit_id"]  # [B]
+                if len(max_logit_ids.shape) > 1:
+                    max_logit_ids = max_logit_ids.flatten()  # 确保是1维
+
+                logger.debug(f"Generated tokens at step {step}: {max_logit_ids}")
+
+                # 更新每个样本的状态 - 关键修复点3
+                active_samples = []  # 仍在生成的样本索引
+                for i in range(batch_size):
+                    if not finished[i]:
+                        token = int(max_logit_ids[i])
+                        if token in self.stop_token:
+                            finished[i] = True
+                            logger.debug(f"Sample {i} finished with stop token {token}")
+                        else:
+                            batch_tokens[i].append(token)
+                            active_samples.append(i)
+
+                # 如果所有样本都完成，提前退出
+                if not active_samples:
+                    logger.debug("All samples finished, breaking early")
+                    break
+
+                # 更新批量状态 - 关键修复点4
+                # 为下一步准备input_ids（只包含未完成的样本的新token）
+                next_input_ids = []
+                for i in range(batch_size):
+                    if finished[i]:
+                        # 已完成的样本，使用padding token或保持当前token
+                        next_input_ids.append([max_logit_ids[i]])
+                    else:
+                        # 未完成的样本，使用新生成的token
+                        next_input_ids.append([max_logit_ids[i]])
+
+                input_ids = np.array(next_input_ids, dtype=np.int32)  # [B, 1]
+
+                # 更新历史长度（只对未完成的样本）
+                for i in range(batch_size):
+                    if not finished[i]:
+                        history_len[i] += 1
+
+                # 更新ids_len（保持为1，因为每次只生成一个token）
+                ids_len = np.ones(batch_size, dtype=np.int64)
+
+                # 更新attention_mask - 关键修复点5
+                # 第一步之后，对于继续生成的样本，attention_mask应该设为0
+                if step == 0:
+                    attention_mask = np.zeros(batch_size, dtype=np.int8)
+                # 后续步骤保持为0
+
+                # 更新分层KV缓存 - 关键修复点6
+                for j in range(num_layers):
+                    past_keys[j] = decoder_outputs[f"out_de_key_{j}"]
+                    past_values[j] = decoder_outputs[f"out_de_value_{j}"]
+
+                logger.debug(f"Step {step} completed, active samples: {len(active_samples)}")
+
+            # 批量解码为文本
+            transcriptions = []
+            for i, tokens in enumerate(batch_tokens):
+                if tokens:
+                    transcription = self.decode_tokens(tokens)
+                    logger.debug(f"Sample {i} tokens: {tokens[:10]}... -> {transcription[:50]}...")
+                else:
+                    transcription = ""
+                    logger.warning(f"Sample {i} generated no tokens")
+                transcriptions.append(transcription)
+
+            logger.info(f"Batch decoding completed, generated {len(transcriptions)} transcriptions")
+            return transcriptions
+
+        except Exception as e:
+            logger.error(f"Batch decoder failed: {e}")
+            logger.debug(traceback.format_exc())
+            # 返回错误信息
+            return [f"decode_error: {str(e)}"] * batch_size
+
+
     def run_decoder_step(self, decoder_inputs):
         """运行单步decoder推理"""
         try:
@@ -226,139 +354,54 @@ class TritonPythonModel:
             raise e
 
     def execute(self, requests):
-        """执行推理请求"""
+        """批处理版本"""
         responses = []
-        for request in requests:
-            transcription = ""
-            
-            try:
-                # 获取输入tensor
+        try:
+            # 1. 收集所有音频数据
+            batch_audio_data = []
+            for request in requests:
                 audio_tensor = pb_utils.get_input_tensor_by_name(request, "audio_data")
-                if audio_tensor is None:
-                    raise ValueError("Missing audio_data input")
-                
-                audio_data = audio_tensor.as_numpy().astype(np.int16)
-                logger.debug(f"Audio data length: {len(audio_data)} bytes")
+                audio_data = audio_tensor.as_numpy().astype(np.int16).squeeze()
+                batch_audio_data.append(audio_data)
 
-                # 1. 特征提取
-                feats, mask = self.process_audio_data(audio_data)
+            batch_size = len(batch_audio_data)
+            logger.info(f"Processing batch of {batch_size} requests")
 
-                # 2. 运行encoder
-                logger.debug("Running encoder inference...")
-                encoder_outputs = self.run_encoder(feats, mask)
+            # 2. 批量特征提取
+            feats, mask = self.process_audio_data(batch_audio_data)
 
-                # 3. 解码循环
-                logger.debug("Starting decoding loop...")
-                
-                # 初始化解码器输入
-                input_ids = np.array([[3]], dtype=np.int32)  # 保持为二维数组
-                history_len = np.array([0], dtype=np.int64)  # 一维数组
-                ids_len = np.array([1], dtype=np.int64)  # 一维数组
-                attention_mask = np.array([1], dtype=np.int8)  # 一维数组
-                
-                # 初始化decoder的key-value缓存
-                batch_size = 1
-                num_layers = 16
-                model_dtype = np.float32
-                past_keys_B = np.zeros((batch_size, 20, 64, 0), dtype=model_dtype)
-                past_values_B = np.zeros((batch_size, 20, 0, 64), dtype=model_dtype)
-                
-                # 准备decoder输入字典
-                decoder_inputs = {
-                    "input_ids": input_ids,
-                    "history_len": history_len,
-                    "ids_len": ids_len,
-                    "attention_mask": attention_mask
-                }
-                
-                # 添加past_keys和past_values
-                for j in range(num_layers):
-                    decoder_inputs[f"in_de_key_{j}"] = past_keys_B
-                    decoder_inputs[f"in_de_value_{j}"] = past_values_B
-                
-                # 添加encoder输出
-                for key, value in encoder_outputs.items():
-                    decoder_inputs[key] = value
-                
-                # 初始化解码变量
-                num_decode = 0
-                save_token = []
-                
-                # 解码循环
-                while num_decode < self.max_seq_len:
-                    # 运行decoder推理
-                    decoder_outputs = self.run_decoder_step(decoder_inputs)
-                    
-                    # 获取生成的token
-                    max_logit_id = decoder_outputs["max_logit_id"][0]
-                    num_decode += 1
-                    
-                    logger.debug(f"Step {num_decode}: Generated token {max_logit_id}")
-                    
-                    # 检查是否为结束token
-                    if max_logit_id in self.stop_token:
-                        logger.debug(f"Encountered stop token: {max_logit_id}")
-                        break
-                    
-                    # 保存生成的token
-                    save_token.append(max_logit_id)
-                    
-                    # 更新decoder输入
-                    # 更新past_keys和past_values
-                    for j in range(num_layers):
-                        decoder_inputs[f"in_de_key_{j}"] = decoder_outputs[f"out_de_key_{j}"]
-                        decoder_inputs[f"in_de_value_{j}"] = decoder_outputs[f"out_de_value_{j}"]
-                    
-                    # 更新input_ids为当前生成的token
-                    decoder_inputs["input_ids"] = np.array([[max_logit_id]], dtype=np.int32)  # 保持为二维数组
-                    
-                    # 更新history_len
-                    decoder_inputs["history_len"] = np.array([decoder_inputs["history_len"][0] + 1], dtype=np.int64)  # 一维数组
-                    
-                    # 更新ids_len，保持为1（每次只生成一个token）
-                    decoder_inputs["ids_len"] = np.array([1], dtype=np.int64)  # 一维数组
-                    
-                    # 更新attention_mask，第一次解码后设为0
-                    if num_decode >= 1:
-                        decoder_inputs["attention_mask"] = np.array([0], dtype=np.int8)  # 一维数组
+            # 3. 批量encoder推理
+            encoder_outputs = self.run_encoder(feats, mask)
 
-                logger.debug(f"Decoding completed. Generated tokens: {save_token}")
+            # 4. 批量decoder推理
+            batch_transcriptions = self.run_batch_decoder(encoder_outputs, batch_size)
 
-                # 4. 解码tokens为文本
-                if save_token:
-                    transcription = self.decode_tokens(save_token)
-                else:
-                    transcription = ""
-                
-                logger.info(f"Final transcription: {transcription}")
-                
-            except Exception as e:
-                error_msg = f"Error during inference: {str(e)}"
-                logger.error(error_msg)
-                logger.debug(traceback.format_exc())
-                transcription = error_msg
+            # 5. 创建响应
             
-            # 创建输出tensor
-            try:
+            for transcription in batch_transcriptions:
                 transcription_tensor = pb_utils.Tensor(
                     "transcription", 
                     np.array([transcription], dtype=self.output0_dtype)
                 )
-                response = pb_utils.InferenceResponse(output_tensors=[transcription_tensor])
-                responses.append(response)
-                
-            except Exception as e:
-                error_msg = f"Error creating response: {str(e)}"
-                logger.error(error_msg)
-                # 创建错误响应
+                responses.append(pb_utils.InferenceResponse(output_tensors=[transcription_tensor]))
+
+            logger.info(f"Batch processing completed successfully")
+
+        except Exception as e:
+            logger.error(f"Batch processing failed: {e}")
+            logger.debug(traceback.format_exc())
+            # 为所有请求返回错误信息
+            for _ in requests:
                 error_tensor = pb_utils.Tensor(
                     "transcription", 
-                    np.array([error_msg], dtype=self.output0_dtype)
+                    np.array(["transcription error"], dtype=self.output0_dtype)
                 )
                 error_response = pb_utils.InferenceResponse(output_tensors=[error_tensor])
                 responses.append(error_response)
-        
+
         return responses
+
+
 
     def finalize(self):
         """清理资源"""
@@ -375,4 +418,3 @@ class TritonPythonModel:
         self.tokenizer = None
         
         logger.info("FireRedASR pipeline model finalized")
-
