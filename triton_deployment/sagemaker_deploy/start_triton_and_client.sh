@@ -15,21 +15,32 @@ triton_pid=$!
 
 cat triton.log
 # Wait for tritonserver to start and check if it's running
-timeout=30
+timeout=15
 triton_started=false
 
+echo "Waiting for Triton gRPC server to be ready..."
+
 while [ $timeout -gt 0 ]; do
-    if kill -0 $triton_pid 2>/dev/null; then
-        echo "Triton server started successfully"
-        triton_started=true
+    if ! kill -0 $triton_pid 2>/dev/null; then
+        echo "Error: Triton server process died"
+        cat triton.log
+        exit 1
+    fi
+    
+    # 使用 grpc_health_probe 或 nc 检查端口
+    if nc -z localhost 8001 2>/dev/null; then
+        echo "Triton gRPC server is ready"
+        triton_ready=true
         break
     fi
+    
+    echo "Waiting for Triton gRPC server... ($timeout seconds remaining)"
     sleep 1
     ((timeout--))
 done
 
-if [ "$triton_started" = false ]; then
-    echo "Error: Triton server failed to start within 30 seconds"
+if [ "$triton_ready" = false ]; then
+    echo "Error: Triton gRPC server failed to start within 60 seconds"
     echo "Triton server logs:"
     cat triton.log
     exit 1
@@ -37,7 +48,7 @@ fi
 
 # Start the main application
 echo "Starting uvicorn server..."
-uvicorn predictor:app --host 0.0.0.0 --port 8080 --workers 16 || {
+uvicorn predictor:app --host 0.0.0.0 --port 8080 --workers 1 || {
     echo "Error: uvicorn server failed to start"
     exit 1
 }

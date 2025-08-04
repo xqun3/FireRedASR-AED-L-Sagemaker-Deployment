@@ -7,6 +7,9 @@ import tempfile
 import traceback
 import time
 import threading
+import multiprocessing as mp
+from multiprocessing import Process, Queue, Pool, Manager, Value, Lock
+import pickle
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -16,14 +19,18 @@ import numpy as np
 import torch
 import torchaudio
 from io import BytesIO
+import asyncio
+from concurrent.futures import ProcessPoolExecutor
+import queue
 
 app = FastAPI(title="FireRedASR SageMaker Endpoint", version="1.0.0")
 
 # Triton 客户端配置
 TRITON_URL = "127.0.0.1:8001"
 MODEL_NAME = "fireredasr_onnx"
+SAMPLE_RATE = 16000
+PADDING_DURATION = 4  # 4 seconds
 
-# Pydantic 模型定义
 class AudioRequest(BaseModel):
     audio: str  # base64 encoded audio data
 
@@ -34,209 +41,222 @@ class PredictionResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
     status: str
-
+    
 class HealthResponse(BaseModel):
     status: str
     error: Optional[str] = None
 
-class TritonPredictor:
-    _instance = None
-    _lock = threading.Lock()
-    
-    def __new__(cls):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super(TritonPredictor, cls).__new__(cls)
-        return cls._instance
-    
-    def __init__(self):
-        if not hasattr(self, 'initialized'):
-            self.triton_client = None
-            self.model_name = MODEL_NAME
-            self.initialized = False
-            self._initialize_client()
 
-    def _initialize_client(self):
-        """初始化 Triton 客户端，带重试机制"""
+def create_triton_client():
+    """创建单个 Triton 客户端"""
+    try:
+        client = grpcclient.InferenceServerClient(url=TRITON_URL, verbose=False)
+        if client.is_server_live() and client.is_model_ready(MODEL_NAME):
+            return client
+        else:
+            raise Exception("Client not ready")
+    except Exception as e:
+        print(f"Failed to create client: {e}")
+        raise
+
+
+def preprocess_audio(audio_data):
+    """预处理音频数据，包括格式转换和padding"""
+    try:
+        # 处理输入数据格式
+        waveform = np.frombuffer(audio_data, dtype=np.int16)
+
+        sample_rate = SAMPLE_RATE
+        
         try:
-            self.triton_client = grpcclient.InferenceServerClient(url=TRITON_URL, verbose=False)
-
-            # 检查服务器健康状态
-            if not self.triton_client.is_server_live():
-                raise Exception("Triton server is not live")
-
-            if not self.triton_client.is_server_ready():
-                raise Exception("Triton server is not ready")
-
-            # 检查模型状态
-            if not self.triton_client.is_model_ready(self.model_name):
-                raise Exception(f"Model {self.model_name} is not ready")
-
-            print(f"Triton client initialized successfully for model: {self.model_name}")
-            self.initialized = True
-            return
-
+            duration = int(len(waveform) / sample_rate)
         except Exception as e:
-            raise Exception(f"Failed to initialize Triton client {str(e)}")
+            print(f"Error calculating duration: {e}")
+            print(f"Length of waveform: {len(waveform)}")
+            duration = 0
+        
+        print(f"Original audio duration: {duration} seconds, length: {len(waveform)}")
+        
+        # Padding to nearest PADDING_DURATION seconds
+        padding_duration = PADDING_DURATION
+        target_length = padding_duration * sample_rate * ((duration // padding_duration) + 1)
+        
+        # 创建零填充的样本数组
+        samples = np.zeros((1, target_length), dtype=np.int16)
+        samples[0, :len(waveform)] = waveform
+        
+        print(f"Padded audio shape: {samples.shape}, target_length: {target_length}")
+        
+        return samples
+        
+    except Exception as e:
+        print(f"Error in audio preprocessing: {e}")
+        raise
 
-    def _ensure_client_ready(self):
-        """确保客户端准备就绪"""
-        if not self.initialized or self.triton_client is None:
-            self._initialize_client()
 
-        # 再次检查连接状态
-        try:
-            if not self.triton_client.is_server_live():
-                print("Triton server connection lost, reinitializing...")
-                self._initialize_client()
-        except Exception as e:
-            print(f"Error checking server status: {e}")
-            self._initialize_client()
-
-    def predict(self, audio_data):
-        """执行推理"""
-        try:
-            # 处理音频数据
-            if isinstance(audio_data, str):
-                # 如果是base64编码的字符串
-                try:
-                    audio_bytes = base64.b64decode(audio_data)
-                    audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-                except Exception as e:
-                    return {
-                        "error": f"Failed to decode base64 audio data: {str(e)}",
-                        "status": "error"
-                    }
-            elif isinstance(audio_data, bytes):
-                # 如果是原始字节数据
-                audio_data = np.frombuffer(audio_data, dtype=np.int16)
-            elif not isinstance(audio_data, np.ndarray):
-                return {
-                    "error": "Unsupported audio data format",
-                    "status": "error"
-                }
-
-            # 确保音频数据形状正确
-            if audio_data.ndim == 1:
-                audio_data = audio_data.reshape(1, -1)
-
-            # 准备输入数据
-            audio_input = grpcclient.InferInput("audio_data", audio_data.shape, "INT16")
-            audio_input.set_data_from_numpy(audio_data)
-
-            # 准备输出
-            output = grpcclient.InferRequestedOutput("transcription")
-
-            # 执行推理
-            response = self.triton_client.infer(
-                model_name=self.model_name,
-                inputs=[audio_input],
-                outputs=[output]
+def worker_process_predict(audio_data):
+    """工作进程中的预测函数"""
+    client = None
+    try:
+        # 每个工作进程创建自己的客户端
+        client = create_triton_client()
+        
+        # 预处理音频数据（包括padding）
+        processed_audio = preprocess_audio(audio_data)
+        
+        # 准备输入
+        inputs = [
+            grpcclient.InferInput(
+                "audio_data", 
+                processed_audio.shape, 
+                "INT16"
             )
-
-            # 获取结果
-            transcription = response.as_numpy("transcription")
-
-            # 处理结果（根据你的模型输出格式调整）
-            if isinstance(transcription, np.ndarray):
-                if transcription.dtype.kind in ['U', 'S']:  # Unicode 或字节字符串
-                    result = transcription.item() if transcription.size == 1 else transcription.tolist()
-                else:
-                    result = transcription.tolist()
+        ]
+        
+        # 设置输入数据
+        inputs[0].set_data_from_numpy(processed_audio)
+        
+        # 准备输出
+        outputs = [grpcclient.InferRequestedOutput("transcription")]
+        
+        # print(f"Process {os.getpid()}: Sending inference request with audio shape: {processed_audio.shape}")
+        
+        # 执行推理
+        response = client.infer(
+            model_name=MODEL_NAME,
+            inputs=inputs,
+            outputs=outputs
+        )
+        
+        # 处理结果
+        transcription = response.as_numpy("transcription")
+        if isinstance(transcription, np.ndarray):
+            if transcription.dtype.kind in ['U', 'S']:
+                result = transcription.item() if transcription.size == 1 else transcription.tolist()
             else:
-                result = str(transcription)
+                result = transcription.tolist()
+        else:
+            result = str(transcription)
+        
+        # print(f"Process {os.getpid()}: Transcription result: {result}")
+        
+        return {
+            "transcription": result,
+            "status": "success"
+        }
+        
+    except Exception as e:
+        print(f"Process {os.getpid()}: Prediction error: {str(e)}")
+        print(traceback.format_exc())
+        return {
+            "error": str(e),
+            "status": "error"
+        }
+    finally:
+        if client:
+            try:
+                client.close()
+            except:
+                pass
 
-            return {
-                "transcription": result,
-                "status": "success"
-            }
 
+class AsyncTritonPredictor:
+    def __init__(self, max_workers=4):
+        """
+        初始化多进程预测器
+        
+        Args:
+            max_workers: 最大工作进程数
+        """
+        self.max_workers = max_workers
+        self.executor = ProcessPoolExecutor(
+            max_workers=max_workers,
+            mp_context=mp.get_context('spawn')  # 使用 spawn 方式创建进程
+        )
+        self.initialized = True
+        print(f"Initialized AsyncTritonPredictor with {max_workers} worker processes")
+    
+    async def predict(self, audio_data):
+        """异步预测方法"""
+        try:
+            # 在进程池中执行预测
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self.executor,
+                worker_process_predict,
+                audio_data
+            )
+            return result
         except Exception as e:
-            print(f"Prediction error: {str(e)}")
+            print(f"Async prediction error: {str(e)}")
             print(traceback.format_exc())
             return {
                 "error": str(e),
                 "status": "error"
             }
-
+    
     def cleanup(self):
         """清理资源"""
         try:
-            if self.triton_client is not None:
-                print("Closing Triton client connection...")
-                # 关闭 Triton 客户端连接
-                self.triton_client.close()
-                self.triton_client = None
-                print("Triton client connection closed successfully")
-            
-            self.initialized = False
-            print("TritonPredictor cleanup completed")
-            
+            print("Shutting down process pool...")
+            # 关闭进程池
+            self.executor.shutdown(wait=True)
+            print("Process pool shutdown completed")
         except Exception as e:
-            print(f"Error during TritonPredictor cleanup: {str(e)}")
+            print(f"Cleanup error: {e}")
 
-    def __del__(self):
-        """析构函数，确保资源被释放"""
-        self.cleanup()
+    def health_check(self):
+        """健康检查方法"""
+        try:
+            # 创建测试客户端检查连接
+            test_client = create_triton_client()
+            is_healthy = test_client.is_server_live() and test_client.is_model_ready(MODEL_NAME)
+            test_client.close()
+            return is_healthy
+        except Exception as e:
+            print(f"Health check error: {e}")
+            return False
+
 
 # 全局预测器实例
 _predictor_instance = None
+_predictor_lock = threading.Lock()
 
 def get_predictor():
-    """获取预测器实例（延迟初始化）"""
     global _predictor_instance
     if _predictor_instance is None:
-        _predictor_instance = TritonPredictor()
+        with _predictor_lock:
+            if _predictor_instance is None:
+                # 根据CPU核心数设置工作进程数
+                max_workers = min(mp.cpu_count(), 8)  # 最多8个进程
+                _predictor_instance = AsyncTritonPredictor(max_workers=max_workers)
+                print(f"Created predictor with {max_workers} worker processes")
     return _predictor_instance
 
 def cleanup_predictor():
     """清理预测器实例"""
     global _predictor_instance
     if _predictor_instance is not None:
-        _predictor_instance.cleanup()
-        _predictor_instance = None
-
-@app.get("/ping", response_model=HealthResponse)
-async def ping():
-    """健康检查端点"""
-    try:
-        predictor = get_predictor()
-
-        # 检查 Triton 服务器状态
-        if predictor.initialized and predictor.triton_client:
-            try:
-                if predictor.triton_client.is_server_live():
-                    return HealthResponse(status="healthy")
-                else:
-                    return HealthResponse(status="unhealthy", error="Triton server not live")
-            except Exception as e:
-                return HealthResponse(status="unhealthy", error=f"Triton server check failed: {str(e)}")
-        else:
-            return HealthResponse(status="unhealthy", error="Triton client not initialized")
-
-    except Exception as e:
-        return HealthResponse(status="unhealthy", error=str(e))
+        with _predictor_lock:
+            if _predictor_instance is not None:
+                _predictor_instance.cleanup()
+                _predictor_instance = None
 
 @app.post("/invocations", response_model=Union[PredictionResponse, ErrorResponse])
 async def invocations(request: Request):
-    """SageMaker 推理端点"""
     try:
-        # 获取预测器实例
         predictor = get_predictor()
 
-        # 获取请求数据
         content_type = request.headers.get("content-type", "")
 
         if content_type == 'application/octet-stream':
-            # 直接音频数据 - FIX: await the coroutine
             raw_audio_bytes = await request.body()
-            audio_data = np.frombuffer(raw_audio_bytes, dtype=np.int16)
+            audio_data = raw_audio_bytes  # 直接传递字节数据
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported content type: {content_type}")
 
-        # 执行推理
-        result = predictor.predict(audio_data)
+        # 异步执行推理
+        result = await predictor.predict(audio_data)
 
         if result.get("status") == "error":
             raise HTTPException(status_code=500, detail=result)
@@ -252,17 +272,49 @@ async def invocations(request: Request):
             status_code=500,
             detail=ErrorResponse(error=str(e), status="error").dict()
         )
+        
+@app.get("/ping", response_model=HealthResponse)
+async def ping():
+    """健康检查端点"""
+    try:
+        predictor = get_predictor()
 
+        # 检查预测器状态
+        if predictor.initialized:
+            try:
+                # 在单独的线程中执行健康检查，避免阻塞
+                loop = asyncio.get_event_loop()
+                is_healthy = await loop.run_in_executor(
+                    None,  # 使用默认线程池
+                    predictor.health_check
+                )
+                
+                if is_healthy:
+                    return HealthResponse(status="healthy")
+                else:
+                    return HealthResponse(status="unhealthy", error="Triton server not accessible")
+                    
+            except Exception as e:
+                return HealthResponse(status="unhealthy", error=f"Health check failed: {str(e)}")
+        else:
+            return HealthResponse(status="unhealthy", error="Predictor not initialized")
 
-# 启动事件处理
+    except Exception as e:
+        return HealthResponse(status="unhealthy", error=str(e))
+
+    
 @app.on_event("startup")
 async def startup_event():
     """应用启动时的初始化"""
     print("FastAPI application starting up...")
+    print(f"Main process PID: {os.getpid()}")
+    print(f"Available CPU cores: {mp.cpu_count()}")
+    
     # 预热预测器（可选）
     try:
         predictor = get_predictor()
         print(f"Predictor initialization status: {predictor.initialized}")
+        print(f"Worker processes: {predictor.max_workers}")
     except Exception as e:
         print(f"Warning: Failed to initialize predictor during startup: {e}")
 
@@ -281,11 +333,24 @@ async def shutdown_event():
             torch.cuda.empty_cache()
             print("PyTorch CUDA cache cleared")
             
-        # 清理临时文件（如果有的话）
-        # 这里可以添加其他需要清理的资源
-        
         print("Application shutdown completed successfully")
         
     except Exception as e:
         print(f"Error during application shutdown: {str(e)}")
         print(traceback.format_exc())
+
+
+# 为了支持多进程，需要添加主程序保护
+if __name__ == "__main__":
+    import uvicorn
+    
+    # 设置多进程启动方式
+    mp.set_start_method('spawn', force=True)
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8080,
+        workers=1  # FastAPI 应用本身使用单进程，内部使用进程池
+    )
+
