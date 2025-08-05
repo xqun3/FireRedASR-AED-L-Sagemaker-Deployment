@@ -60,12 +60,9 @@ def create_triton_client():
         raise
 
 
-def preprocess_audio(audio_data):
+def preprocess_audio(waveform):
     """预处理音频数据，包括格式转换和padding"""
     try:
-        # 处理输入数据格式
-        waveform = np.frombuffer(audio_data, dtype=np.int16)
-
         sample_rate = SAMPLE_RATE
         
         try:
@@ -101,8 +98,9 @@ def worker_process_predict(audio_data):
         # 每个工作进程创建自己的客户端
         client = create_triton_client()
         
+        waveform = np.frombuffer(audio_data, dtype=np.int16)
         # 预处理音频数据（包括padding）
-        processed_audio = preprocess_audio(audio_data)
+        processed_audio = preprocess_audio(waveform)
         
         # 准备输入
         inputs = [
@@ -110,12 +108,15 @@ def worker_process_predict(audio_data):
                 "audio_data", 
                 processed_audio.shape, 
                 "INT16"
-            )
+            ),
+            grpcclient.InferInput(
+            "wav_length", [1, 1], "INT32"  # Changed shape to [1, 1]
+        ),
         ]
         
         # 设置输入数据
         inputs[0].set_data_from_numpy(processed_audio)
-        
+        inputs[1].set_data_from_numpy(np.array([[len(waveform)]], dtype=np.int32))
         # 准备输出
         outputs = [grpcclient.InferRequestedOutput("transcription")]
         

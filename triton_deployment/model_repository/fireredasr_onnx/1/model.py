@@ -424,11 +424,13 @@ class TritonPythonModel:
             for request in requests:
                 # 获取音频输入
                 in_0 = pb_utils.get_input_tensor_by_name(request, "audio_data")
+                in_1 = pb_utils.get_input_tensor_by_name(request, "wav_length")
                 if in_0 is None:
                     raise ValueError("Missing required input 'audio_data'")
                 
-                audio_bytes = in_0.as_numpy()[0]  # 获取字节数据
-                batch_audio_data.append(audio_bytes)
+                audio_bytes = in_0.as_numpy()[0]
+                wav_length = in_1.as_numpy()[0]
+                batch_audio_data.append((audio_bytes, wav_length))
             
             batch_size = len(batch_audio_data)
             parse_time = time.perf_counter() - parse_start

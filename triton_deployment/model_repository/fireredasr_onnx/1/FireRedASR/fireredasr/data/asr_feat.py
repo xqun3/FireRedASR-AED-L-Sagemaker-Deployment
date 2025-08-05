@@ -13,35 +13,14 @@ class ASRFeatExtractor:
         self.fbank = KaldifeatFbank(num_mel_bins=80, frame_length=25,
             frame_shift=10, dither=0.0)
 
-    # def __call__(self, wav_paths):
-    #     feats = []
-    #     durs = []
-    #     for wav_path in wav_paths:
-    #         sample_rate, wav_np = kaldiio.load_mat(wav_path)
-    #         dur = wav_np.shape[0] / sample_rate
-    #         fbank = self.fbank((sample_rate, wav_np))
-    #         if self.cmvn is not None:
-    #             fbank = self.cmvn(fbank)
-    #         fbank = torch.from_numpy(fbank).float()
-    #         feats.append(fbank)
-    #         durs.append(dur)
-    #     lengths = torch.tensor([feat.size(0) for feat in feats]).long()
-    #     feats_pad = self.pad_feat(feats, 0.0)
-    #     return feats_pad, lengths, durs
     def __call__(self, audio_bytes):
         feats = []
         durs = []
-        # with open(wav_paths, 'rb') as audio_file:
-        #     audio_bytes = base64.b64encode(audio_file.read()).decode('utf-8')
-        # print("batch_size: ", len(audio_bytes))
-        for audio_byte in audio_bytes:
-            # print(audio_byte.shape)
-            # Load audio from bytes
-            # with io.BytesIO(audio_bytes) as audio_file:
-            #     wav_np, sample_rate = sf.read(audio_file)
+
+        for audio_byte, length in audio_bytes:
             sample_rate=16000
-            # print(audio_byte)
-            # print(audio_byte.shape)
+            audio_byte = audio_byte[:length[0]]
+
             dur = audio_byte.shape[0] / sample_rate
             fbank = self.fbank((sample_rate, audio_byte))
             if self.cmvn is not None:
