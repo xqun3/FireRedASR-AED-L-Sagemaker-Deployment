@@ -19,7 +19,13 @@ RUN mkdir -p /opt/program
 
 # 复制 SageMaker 服务代码
 COPY sagemaker_deploy/requirements.txt sagemaker_deploy/serve /opt/program/
-RUN chmod +x /opt/program/serve && pip install --no-cache-dir -r /opt/program/requirements.txt
+# RUN chmod +x /opt/program/serve && pip install --no-cache-dir -r /opt/program/requirements.txt
+RUN chmod +x /opt/program/serve && \
+    apt-get update && \
+    pip3 uninstall -y onnxruntime onnxruntime-gpu && \
+    pip3 install --no-cache-dir --force-reinstall --ignore-installed -r /opt/program/requirements.txt && \
+    pip3 install --no-cache-dir --force-reinstall onnxruntime-gpu==1.22.0
+
 
 # 复制模型仓库
 # COPY model_repository/ /opt/ml/model/
